@@ -22,10 +22,10 @@
 
 %% External exports
 -export([start_link/2, start_link/3,
-	 start_child/2, restart_child/2,
-	 delete_child/2, terminate_child/2,
-	 which_children/1, count_children/1,
-	 check_childspecs/1]).
+	start_child/2, start_child/3,
+	restart_child/2, delete_child/2,
+	terminate_child/2, which_children/1,
+	count_children/1, check_childspecs/1]).
 
 %% Internal exports
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -138,7 +138,14 @@ start_link(SupName, Mod, Args) ->
       SupRef :: sup_ref(),
       ChildSpec :: child_spec() | (List :: [term()]).
 start_child(Supervisor, ChildSpec) ->
-    call(Supervisor, {start_child, ChildSpec}).
+    call(Supervisor, {start_child, ChildSpec, 0}).
+
+-spec start_child(SupRef, ChildSpec, Limit) -> startchild_ret() when
+      SupRef :: sup_ref(),
+      ChildSpec :: child_spec() | (List :: [term()]),
+      Limit :: pos_integer().
+start_child(Supervisor, ChildSpec, Limit) when Limit > 0 ->
+    call(Supervisor, {start_child, ChildSpec, Limit}).
 
 -spec restart_child(SupRef, Id) -> Result when
       SupRef :: sup_ref(),
@@ -344,21 +351,35 @@ do_start_child_i(M, F, A) ->
 -type call() :: 'which_children' | 'count_children' | {_, _}.	% XXX: refine
 -spec handle_call(call(), term(), state()) -> {'reply', term(), state()}.
 
-handle_call({start_child, EArgs}, _From, State) when ?is_simple(State) ->
+handle_call({start_child, EArgs, Limit}, _From, State) when ?is_simple(State) ->
     Child = hd(State#state.children),
-    #child{mfargs = {M, F, A}} = Child,
-    Args = A ++ EArgs,
-    case do_start_child_i(M, F, Args) of
-	{ok, undefined} when Child#child.restart_type =:= temporary ->
-	    {reply, {ok, undefined}, State};
-	{ok, Pid} ->
-	    NState = save_dynamic_child(Child#child.restart_type, Pid, Args, State),
-	    {reply, {ok, Pid}, NState};
-	{ok, Pid, Extra} ->
-	    NState = save_dynamic_child(Child#child.restart_type, Pid, Args, State),
-	    {reply, {ok, Pid, Extra}, NState};
-	What ->
-	    {reply, What, State}
+    RestartType = Child#child.restart_type,
+    Limited = if
+	Limit > 0, RestartType =:= temporary ->
+	    ?SETS:size(dynamics_db(temporary, State#state.dynamics)) >= Limit;
+	Limit > 0, RestartType =/= temporary ->
+	    ?DICT:size(dynamics_db(RestartType, State#state.dynamics)) >= Limit;
+	true ->
+	    false
+    end,
+    case Limited of
+	true ->
+	    {reply, {error, child_limit}, State};
+	false ->
+	    #child{mfargs = {M, F, A}} = Child,
+	    Args = A ++ EArgs,
+	    case do_start_child_i(M, F, Args) of
+		{ok, undefined} when RestartType =:= temporary ->
+		    {reply, {ok, undefined}, State};
+		{ok, Pid} ->
+		    NState = save_dynamic_child(RestartType, Pid, Args, State),
+		    {reply, {ok, Pid}, NState};
+		{ok, Pid, Extra} ->
+		    NState = save_dynamic_child(RestartType, Pid, Args, State),
+		    {reply, {ok, Pid, Extra}, NState};
+		What ->
+		    {reply, What, State}
+	    end
     end;
 
 %% terminate_child for simple_one_for_one can only be done with pid
@@ -384,13 +405,18 @@ handle_call({terminate_child, Name}, _From, State) ->
 handle_call({_Req, _Data}, _From, State) when ?is_simple(State) ->
     {reply, {error, simple_one_for_one}, State};
 
-handle_call({start_child, ChildSpec}, _From, State) ->
-    case check_childspec(ChildSpec) of
-	{ok, Child} ->
-	    {Resp, NState} = handle_start_child(Child, State),
-	    {reply, Resp, NState};
-	What ->
-	    {reply, {error, What}, State}
+handle_call({start_child, ChildSpec, Limit}, _From, State) ->
+    if
+	Limit > 0, length(State#state.children) >= Limit ->
+	    {reply, {error, child_limit}, State};
+	true ->
+	    case check_childspec(ChildSpec) of
+		{ok, Child} ->
+		    {Resp, NState} = handle_start_child(Child, State),
+		    {reply, Resp, NState};
+		What ->
+		    {reply, {error, What}, State}
+	    end
     end;
 
 handle_call({restart_child, Name}, _From, State) ->

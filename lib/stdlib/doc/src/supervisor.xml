@@ -296,6 +296,7 @@ child_spec() = {Id,StartFunc,Restart,Shutdown,Type,Modules}
     </func>
     <func>
       <name name="start_child" arity="2"/>
+      <name name="start_child" arity="3"/>
       <fsummary>Dynamically add a child process to a supervisor.</fsummary>
       <type name="child_spec"/>
       <type name="startchild_ret"/>
@@ -319,6 +320,8 @@ child_spec() = {Id,StartFunc,Restart,Shutdown,Type,Modules}
           supervisor, see below). The child process will be started by
           using the start function as defined in the child
           specification.</p>
+        <p>If <c><anno>Limit</anno></c> or more children are already specified
+          for the supervisor <c>start_child/3</c> returns <c>{error,child_limit}</c>.</p>
         <p>If the case of a <c>simple_one_for_one</c> supervisor,
           the child specification defined in <c>Module:init/1</c> will
           be used and <c><anno>ChildSpec</anno></c> should instead be an arbitrary

@@ -372,22 +372,26 @@ extra_return(Config) when is_list(Config) ->
 
     ok.
 %%-------------------------------------------------------------------------
-%% Test API functions start_child/2, terminate_child/2, delete_child/2
-%% restart_child/2, which_children/1, count_children/1. Only correct
-%% childspecs are used, handling of incorrect childspecs is tested in
-%% child_specs/1.
+%% Test API functions start_child/2, start_child/3, terminate_child/2,
+%% delete_child/2 restart_child/2, which_children/1, count_children/1.
+%% Only correct childspecs are used, handling of incorrect childspecs is
+%% tested in child_specs/1.
 child_adm(Config) when is_list(Config) ->
     process_flag(trap_exit, true),
-    Child = {child1, {supervisor_1, start_child, []}, permanent, 1000,
-	     worker, []},
-    {ok, _Pid} = start_link({ok, {{one_for_one, 2, 3600}, [Child]}}),
+    Child1 = {child1, {supervisor_1, start_child, []}, permanent, 1000,
+	    worker, []},
+    Child2 = {child2, {supervisor_1, start_child, []}, permanent, 1000,
+	    worker, []},
+    {ok, _Pid} = start_link({ok, {{one_for_one, 2, 3600}, [Child1]}}),
     [{child1, CPid, worker, []}] = supervisor:which_children(sup_test),
     [1,1,0,1] = get_child_counts(sup_test),
     link(CPid),
 
     %% Start of an already runnig process 
     {error,{already_started, CPid}} =
-	supervisor:start_child(sup_test, Child),
+	supervisor:start_child(sup_test, Child1),
+    {error,{already_started, CPid}} =
+	supervisor:start_child(sup_test, Child1, 2),
 
     %% Termination
     {error, not_found} = supervisor:terminate_child(sup_test, hej),
@@ -401,7 +405,8 @@ child_adm(Config) when is_list(Config) ->
     ok = supervisor:terminate_child(sup_test, child1),
 
     %% Start of already existing but not running process 
-    {error,already_present} = supervisor:start_child(sup_test, Child),
+    {error,already_present} = supervisor:start_child(sup_test, Child1),
+    {error,already_present} = supervisor:start_child(sup_test, Child1, 2),
 
     %% Restart
     {ok, CPid2} = supervisor:restart_child(sup_test, child1),
@@ -423,15 +428,25 @@ child_adm(Config) when is_list(Config) ->
 
     %% Start
     {'EXIT',{noproc,{gen_server,call, _}}} =
-	(catch supervisor:start_child(foo, Child)),
-    {ok, CPid3} = supervisor:start_child(sup_test, Child),
+	(catch supervisor:start_child(foo, Child1)),
+    {ok, CPid3} = supervisor:start_child(sup_test, Child1),
     [{child1, CPid3, worker, []}] = supervisor:which_children(sup_test),
     [1,1,0,1] = get_child_counts(sup_test),
 
+    %% Start Limit
+    {'EXIT',{noproc,{gen_server,call, _}}} =
+	(catch supervisor:start_child(foo, Child2, 2)),
+    {error, child_limit} = supervisor:start_child(sup_test, Child2, 1),
+    {ok, CPid4} = supervisor:start_child(sup_test, Child2, 2),
+    [{child2, CPid4, worker, []},
+	{child1, CPid3, worker, []}] = supervisor:which_children(sup_test),
+    [2,2,0,2] = get_child_counts(sup_test),
+
     %% Terminate with Pid not allowed when not simple_one_for_one
     {error,not_found} = supervisor:terminate_child(sup_test, CPid3),
-    [{child1, CPid3, worker, []}] = supervisor:which_children(sup_test),
-    [1,1,0,1] = get_child_counts(sup_test),
+    [{child2, CPid4, worker, []},
+	{child1, CPid3, worker, []}] = supervisor:which_children(sup_test),
+    [2,2,0,2] = get_child_counts(sup_test),
 
     {'EXIT',{noproc,{gen_server,call,[foo,which_children,infinity]}}}
 	= (catch supervisor:which_children(foo)),
@@ -444,7 +459,7 @@ child_adm(Config) when is_list(Config) ->
 %% correct error message is returned.
 child_adm_simple(Config) when is_list(Config) ->
     Child = {child, {supervisor_1, start_child, []}, permanent, 1000,
-	     worker, []},
+	    worker, []},
     {ok, _Pid} = start_link({ok, {{simple_one_for_one, 2, 3600}, [Child]}}),
     %% In simple_one_for_one all children are added dynamically 
     [] = supervisor:which_children(sup_test),
@@ -458,24 +473,28 @@ child_adm_simple(Config) when is_list(Config) ->
 	supervisor:which_children(sup_test),
     [1,1,0,1] = get_child_counts(sup_test),
 
-    {ok, CPid2} = supervisor:start_child(sup_test, []),
+    %% Start Limit
+    {error, child_limit} = supervisor:start_child(sup_test, [], 1),
+    {ok, CPid2} = supervisor:start_child(sup_test, [], 2),
+    {ok, CPid3} = supervisor:start_child(sup_test, [], 1000),
     Children = supervisor:which_children(sup_test),
-    2 = length(Children),
+    3 = length(Children),
+    true = lists:member({undefined, CPid3, worker, []}, Children),
     true = lists:member({undefined, CPid2, worker, []}, Children),
     true = lists:member({undefined, CPid1, worker, []}, Children),
-    [1,2,0,2] = get_child_counts(sup_test),
+    [1,3,0,3] = get_child_counts(sup_test),
 
     %% Termination
     {error, simple_one_for_one} = supervisor:terminate_child(sup_test, child1),
-    [1,2,0,2] = get_child_counts(sup_test),
+    [1,3,0,3] = get_child_counts(sup_test),
     ok = supervisor:terminate_child(sup_test,CPid1),
-    [_] = supervisor:which_children(sup_test),
-    [1,1,0,1] = get_child_counts(sup_test),
+    [_,_] = supervisor:which_children(sup_test),
+    [1,2,0,2] = get_child_counts(sup_test),
     false = erlang:is_process_alive(CPid1),
     %% Terminate non-existing proccess is ok
     ok = supervisor:terminate_child(sup_test,CPid1),
-    [_] = supervisor:which_children(sup_test),
-    [1,1,0,1] = get_child_counts(sup_test),
+    [_,_] = supervisor:which_children(sup_test),
+    [1,2,0,2] = get_child_counts(sup_test),
     %% Terminate pid which is not a child of this supervisor is not ok
     NoChildPid = spawn_link(fun() -> receive after infinity -> ok end end),
     {error, not_found} = supervisor:terminate_child(sup_test, NoChildPid),
@@ -1470,13 +1489,13 @@ simple_one_for_one_scale_many_temporary_children(_Config) ->
     {ok, _SupPid} = start_link({ok, {{simple_one_for_one, 2, 3600}, [Child]}}),
 
     C1 = [begin 
-		 {ok,P} = supervisor:start_child(sup_test,[]), 
+		 {ok,P} = supervisor:start_child(sup_test, [], 1000),
 		 P
 	     end || _<- lists:seq(1,1000)],
     {T1,done} = timer:tc(?MODULE,terminate_all_children,[C1]),
     
     C2 = [begin 
-		 {ok,P} = supervisor:start_child(sup_test,[]), 
+		 {ok,P} = supervisor:start_child(sup_test, [], 11000),
 		 P
 	     end || _<- lists:seq(1,10000)],
     {T2,done} = timer:tc(?MODULE,terminate_all_children,[C2]),
